@@ -1,0 +1,109 @@
+version: '2.0'
+
+SMS-ALARM-CLEAR:
+  type: direct
+  tags:
+    - KafkaTrigger
+    
+  input:
+    - payload
+    - token
+
+  tasks:      
+    extractAndCalculateTimeDifference:
+      action: nsp.python
+      input:
+        script: |
+          import pytz
+          from datetime import datetime, timedelta
+          processed_data = []
+          payload_data = <% $.payload %>
+          last_detect_time = payload_data["lastTimeDetected"]
+          istOffset = 330
+          neName = payload_data["neName"]
+          neId = payload_data["neId"]
+          affectedObjectName = payload_data["affectedObjectName"]
+          AlertName = payload_data["alarmName"]
+          additionalText = payload_data["additionalText"]
+          if additionalText != "N/A":
+            last_word_strip = additionalText.split(" ").pop().replace(r'[^\w\s.%]', '')
+            last_word = "UTIL < " + last_word_strip
+          else:
+            last_word = ""
+          
+          ist_timezone = pytz.timezone('Asia/Kolkata')
+          epoch_time_seconds = last_detect_time / 1000
+          alarm_time = datetime.fromtimestamp(epoch_time_seconds)
+          alarm_time_ist = alarm_time.astimezone(ist_timezone)
+          get_local_IST = alarm_time_ist.strftime('%d%m%y_%H%M %Z%z')
+          formattedDateTime = get_local_IST.replace(' IST+0530', '')
+          
+          if AlertName == "EquipmentAdministrativelyDown":
+            message = "PORT UP NOTIFICATION"
+          elif AlertName == "EquipmentDown":
+            message = "EQUIPMENT OPERATIONAL UP NOTIFICATION"
+          elif AlertName == "ThresholdCrossingAlarm":
+            message = "PORT UTILIZATION NORMAL NOTIFICATION"            
+          elif AlertName == "EquipmentTemperatureTooHigh":
+            message = "EQUIPMENT TEMPERATURE NORMAL NOTIFICATION"          
+          elif AlertName == "LinkDown":
+            message = "LINK UP NOTIFICATION"    
+          elif AlertName == "TemperatureThresholdCrossed":
+            message = "EQUIPMENT TEMPERATURE NORMAL NOTIFICATION"
+           
+          
+          
+          processed_data.append({
+            "message": message,          
+            "neId": neId,
+            "neName": neName,
+            "affectedObjectName": affectedObjectName,
+            "last_word": last_word,
+            "formattedDateTime": formattedDateTime            
+          })
+          
+          return processed_data
+      
+      publish:
+        processed_data: <% task().result %>
+        
+      on-error:
+        - noop
+      
+      on-success:
+        - AMBALAcheckPayload
+
+    AMBALAcheckPayload:
+      action: nsp.python
+      input:
+        script: |
+          import re
+          processedData = <% $.processed_data %>          
+          matches = []
+          for item in processedData:
+            matchResult = re.match(r'.*amb-(up1|up2)-(ixr1|sr1).*', item["neName"])
+            if matchResult:
+              formattedMessage = f"{item['message']}-AMBALA-{item['neId']}-{item['neName']}-{item['affectedObjectName']} {item['last_word']} FROM {item['formattedDateTime']}"
+              matches.append(formattedMessage)
+          
+          return matches
+
+      publish:
+        matches: <% task().result %> 
+        
+      on-error:
+        - noop
+
+      on-success:
+        - AMBALAsendSms
+        
+    AMBALAsendSms:
+      with-items: item in <% $.matches %>
+      action: std.http
+      input:
+        url: "http://172.30.110.14:13013/cgi-bin/sendsms?to=+910876343211&text=<% $.item %>&username=bsnlotp&password=bsnlotp"
+        method: GET
+          
+      publish:
+        response: <% task().result %>
+

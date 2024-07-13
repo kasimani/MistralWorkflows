@@ -1,0 +1,82 @@
+version: '2.0'
+
+SMS-ALARM-RAISE:
+  type: direct
+  tags:
+    - KafkaTrigger
+
+  input:
+    - payload
+    - token
+
+  tasks:
+    extractAndCalculateTimeDifference:
+      action: nsp.python
+      input:
+        script: |
+          import pytz
+          from datetime import datetime
+          import re
+
+          payload_data = <% $.payload %>
+          last_detect_time = payload_data["lastTimeDetected"] / 1000
+          ist_timezone = pytz.timezone('Asia/Kolkata')
+          alarm_time_ist = datetime.fromtimestamp(last_detect_time).astimezone(ist_timezone)
+          formattedDateTime = alarm_time_ist.strftime('%d%m%y_%H%M')
+
+          additionalText = payload_data["additionalText"]
+          last_word = f"UTIL > {re.sub(r'[^\w\s.%]', '', additionalText.split().pop())}" if additionalText != "N/A" else ""
+
+          alert_map = {
+              "EquipmentAdministrativelyDown": "PORT DOWN NOTIFICATION",
+              "EquipmentDown": "EQUIPMENT OPERATIONAL DOWN NOTIFICATION",
+              "ThresholdCrossingAlarm": "PORT UTILIZATION HIGH NOTIFICATION",
+              "EquipmentTemperatureTooHigh": "EQUIPMENT TEMPERATURE HIGH NOTIFICATION",
+              "LinkDown": "LINK DOWN NOTIFICATION",
+              "TemperatureThresholdCrossed": "EQUIPMENT TEMPERATURE HIGH NOTIFICATION",
+              "NodeRebooted": "NODE REBOOT NOTIFICATION"
+          }
+
+          message = alert_map.get(payload_data["alarmName"], "UNKNOWN ALERT")
+
+          formattedMessage = f"{message}-{payload_data['neId']}-{payload_data['neName']}-{payload_data['affectedObjectName']} {last_word} FROM {formattedDateTime}"
+
+          locations = {
+              "AMBALA": re.match(r'.*amb-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "FARIDABAD": re.match(r'.*fdb-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "GURGAON": re.match(r'.*ggn-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "HISSAR": re.match(r'.*his-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "KARNAL": re.match(r'.*knl-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "NARNAUL": re.match(r'.*nnl-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "ROHTAK": re.match(r'.*rht-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "DHARAMSALA": re.match(r'.*dms-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "SHIMLA": re.match(r'.*shm-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+              "SOLAN": re.match(r'.*sln-(up1|up2)-(ixr1|sr1).*', payload_data["neName"]),
+          }
+
+          results = {key: [formattedMessage] for key, match in locations.items() if match}
+
+          return {key: value for key, value in results.items()}
+
+      publish:
+        results: <% task().result %>
+
+      on-error:
+        - noop
+
+      on-success:
+        - AMBALAConditionalCheck
+
+    AMBALAConditionalCheck:
+      publish:
+        match: <% $.results.AMBALA %>
+      on-success:
+        - AMBALAsendSms: <% $.match and len($.match) > 0 %>
+
+    AMBALAsendSms:
+      with-items: item in <% $.match %>
+      action: std.http
+      input:
+        url: "http://172.30.110.14:13013/cgi-bin/sendsms?to=+91123456789&text=<% $.item %>&username=bsnlotp&password=bsnlotp"
+        method: GET
+
