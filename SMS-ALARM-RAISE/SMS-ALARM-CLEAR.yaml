@@ -101,7 +101,7 @@ SMS-ALARM-CLEAR:
       with-items: item in <% $.matches %>
       action: std.http
       input:
-        url: "http://172.30.110.14:13013/cgi-bin/sendsms?to=+910876343211&text=<% $.item %>&username=bsnlotp&password=bsnlotp"
+        url: "http://172.30.110.14:13013/cgi-bin/sendsms?to=+910876343211&text=<% $.item %>&username=admin&password=admin"
         method: GET
           
       publish:
