@@ -1,1 +1,117 @@
-SMS-ALARM-RAISE
+version: '2.0'
+
+SMS-ALARM-RAISE:
+  type: direct
+  tags:
+    - KafkaTrigger
+    
+  input:
+    - payload
+    - token
+
+  tasks:      
+    extractAndCalculateTimeDifference:
+      action: nsp.python
+      input:
+        script: |
+          import pytz
+          from datetime import datetime, timedelta
+          processed_data = []
+          payload_data = <% $.payload %>
+          last_detect_time = payload_data["lastTimeDetected"]
+          istOffset = 330
+          neName = payload_data["neName"]
+          neId = payload_data["neId"]
+          affectedObjectName = payload_data["affectedObjectName"]
+          AlertName = payload_data["alarmName"]
+          additionalText = payload_data["additionalText"]
+          if additionalText != "N/A":
+            last_word_strip = additionalText.split(" ").pop().replace(r'[^\w\s.%]', '')
+            last_word = "UTIL > " + last_word_strip
+          else:
+            last_word = ""
+          
+          ist_timezone = pytz.timezone('Asia/Kolkata')
+          epoch_time_seconds = last_detect_time / 1000
+          alarm_time = datetime.fromtimestamp(epoch_time_seconds)
+          alarm_time_ist = alarm_time.astimezone(ist_timezone)
+          get_local_IST = alarm_time_ist.strftime('%d%m%y_%H%M %Z%z')
+          formattedDateTime = get_local_IST.replace(' IST+0530', '')
+          
+          if AlertName == "EquipmentAdministrativelyDown":
+            message = "PORT DOWN NOTIFICATION"
+          elif AlertName == "EquipmentDown":
+            message = "EQUIPMENT OPERATIONAL DOWN NOTIFICATION"
+          elif AlertName == "ThresholdCrossingAlarm":
+            if "equipment.HardwareTemperature" in additionalText:
+              message = "EQUIPMENT TEMPERATURE TOO HIGH"
+            elif "equipment.traffic" in additionalText:
+              message = "PORT UTILIZATION HIGH NOTIFICATION"
+            else:
+              message = "THRESHOLD CROSSING ALARM"
+          elif AlertName == "EquipmentTemperatureTooHigh":
+            message = "EQUIPMENT TEMPERATURE HIGH NOTIFICATION"
+          elif AlertName == "LinkDown":
+            message = "LINK DOWN NOTIFICATION"
+          elif AlertName == "TemperatureThresholdCrossed":
+            message = "EQUIPMENT TEMPERATURE HIGH NOTIFICATION"
+          elif AlertName == "NodeRebooted":
+            message = "NODE REBOOT NOTIFICATION"
+          elif AlertName == "DiskCapacityProblem":
+            message = "FREE MEMORY"      
+          
+          
+          processed_data.append({
+            "message": message,          
+            "neId": neId,
+            "neName": neName,
+            "affectedObjectName": affectedObjectName,
+            "last_word": last_word,
+            "formattedDateTime": formattedDateTime            
+          })
+          
+          return processed_data
+      
+      publish:
+        processed_data: <% task().result %>
+        
+      on-error:
+        - noop
+      
+      on-success:
+        - checkPayload
+
+    checkPayload:
+      action: nsp.python
+      input:
+        script: |
+          import re
+          processedData = <% $.processed_data %>          
+          matches = []
+          for item in processedData:
+            matchResult = re.match(r'.*amb-(up1|up2)-(ixr1|sr1).*', item["neName"])
+            if matchResult:
+              formattedMessage = f"{item['message']}--{item['neId']}-{item['neName']}-{item['affectedObjectName']} {item['last_word']} FROM {item['formattedDateTime']}"
+              matches.append(formattedMessage)
+          
+          return matches
+
+      publish:
+        matches: <% task().result %> 
+        
+      on-error:
+        - noop
+
+      on-success:
+        - sendSms
+        
+    sendSms:
+      with-items: item in <% $.matches %>
+      action: std.http
+      input:
+        url: "http://172.30.110.14:13013/cgi-bin/sendsms?to=1234567891&text=<% $.item %>&username=bsnlotp&password=bsnlotp"
+        method: GET
+          
+      publish:
+        response: <% task().result %>
+
