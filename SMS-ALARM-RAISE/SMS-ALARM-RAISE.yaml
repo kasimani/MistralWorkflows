@@ -109,7 +109,7 @@ SMS-ALARM-RAISE:
       with-items: item in <% $.matches %>
       action: std.http
       input:
-        url: "http://172.30.110.14:13013/cgi-bin/sendsms?to=1234567891&text=<% $.item %>&username=bsnlotp&password=bsnlotp"
+        url: "http://172.30.110.14:13013/cgi-bin/sendsms?to=1234567891&text=<% $.item %>&username=admin&password=admin"
         method: GET
           
       publish:
