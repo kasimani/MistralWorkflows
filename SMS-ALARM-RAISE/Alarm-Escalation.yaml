@@ -1,0 +1,104 @@
+version: '2.0'
+
+esctest-fulltest:
+  type: direct
+  input:
+    - token
+
+  tasks:
+    processAlarmData:
+      action: std.http
+      input:
+        url: <% locate_nsp('alarms', 'v2') %>/v2/alarms/details?alarmFilter=<% url_encode("alarmName='EquipmentDown' or alarmName='EquipmentAdministrativelyDown' or alarmName='LinkDown' or alarmName='TemperatureThresholdCrossed'") %>
+        method: GET
+        verify: '/opt/nsp/os/ssl/certs/nsp/nsp.pem'
+        headers:
+          Content-Type: 'application/json'
+          Authorization: 'Bearer <% env().token_auth %>'
+
+      publish:
+        alarm_data: <% task().result %>
+       
+      on-success: 
+        - extractAndCalculateTimeDifference
+
+    extractAndCalculateTimeDifference:
+      action: nsp.python
+      input:
+        script: |
+          from datetime import datetime, timedelta
+          alarm_data = <% $.alarm_data %>
+          processed_data = []
+          for alarm in alarm_data["content"]["response"]["data"]:
+            epoch_time_seconds = alarm["firstTimeDetected"] / 1000
+            alarm_time = datetime.fromtimestamp(epoch_time_seconds)
+            first_time_detected = alarm["firstTimeDetected"]
+            last_time_detected = int(datetime.now().timestamp() * 1000)
+            difference_ms = last_time_detected - first_time_detected
+            time_difference = int(difference_ms / 3600000)
+            formattedDateTime = alarm_time.strftime('%d%m%y_%H%M %Z%z')
+            AlertName = alarm["alarmName"]
+            if AlertName == "EquipmentAdministrativelyDown":
+              message = "PORT DOWN NOTIFICATION"
+            elif AlertName == "LinkDown":
+              message = "LINK DOWN NOTIFICATION"
+            elif AlertName == "NodeRebooted":
+              message = "NODE REBOOTED"
+            elif AlertName == "EquipmentDown":
+              message = "Inoperable Equipment"
+             elif AlertName == "TemperatureThresholdCrossed":
+              message = "HIGH TEMPERATURE"  
+              
+            processed_data.append({
+              "neName": alarm["neName"],
+              "formattedDateTime": formattedDateTime,
+              "alarmName": alarm["alarmName"],
+              "timeDifferenceHours": time_difference,
+              "neId": alarm["neId"],
+              "affectedObjectName": alarm["affectedObjectName"],
+              "additionalText": alarm["additionalText"],
+              "message": message
+            })
+              
+          return processed_data
+          
+      publish:
+        processed_data: <% task().result %>
+        
+      on-success: 
+        - AMBALAcheckPayload1
+        
+    AMBALAcheckPayload1:
+      action: nsp.python
+      input:
+        script: |
+          import re
+          processedData = <% $.processed_data %>
+          matchedData = []
+          for alarmitem in processedData:
+            AlertName = alarmitem["alarmName"]
+            matchResult = re.match(r'.*amb-(up1|up2)-(ixr1|sr1).*', alarmitem["neName"])
+            if matchResult and 6 < alarmitem["timeDifferenceHours"] <=8:
+              formattedMessage = f"{alarmitem['message']}-AMBALA-{alarmitem['neId']}-{alarmitem['neName']}-{alarmitem['affectedObjectName']} AT {alarmitem['formattedDateTime']} - Not Resolved Since {alarmitem['timeDifferenceHours']} hours"
+              matchedData.append(formattedMessage)
+
+          return matchedData
+
+      publish:
+        matchedData: <% task().result %>
+        
+      on-success:
+        - AMBALAlogtofile
+        
+      on-error:
+        - noop
+
+    AMBALAlogtofile:
+      with-items: item in <% $.matchedData %>
+      action: std.http
+      input:
+        url: "http://172.30.110.14:13013/cgi-bin/sendsms?to=+91112367868765764&text=<% $.item %>&username=admin&password=admin"
+        method: GET
+
+      publish:
+        response: <% task().result %>
